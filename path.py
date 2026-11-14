@@ -14,11 +14,13 @@ from numpy._typing import NDArray
 from pinocchio.utils import rotate
 import time
 
+from inverse_geometry import computeqgrasppose
+
 Q: TypeAlias = NDArray[np.float64]
 GraphNode = namedtuple('GraphNode', ['parent', 'q', 'cube_placement'])
 
 
-def rand_conf() -> tuple[Q, pin.SE3]:
+def rand_conf(robot, cube: pin.RobotWrapper) -> tuple[Q, pin.SE3]:
     success = False
     while not success:
         cube_pos = pin.SE3(rotate("z", 0.0),np.random.uniform(low=[0.25, -0.5, 0.93], high=[0.5, 0.3, 1.93], size=3))
@@ -26,7 +28,7 @@ def rand_conf() -> tuple[Q, pin.SE3]:
     return q, cube_pos
 
 def lerp(q1: Q, q2: Q, t: float) -> Q:
-    return pin.interpolate(robot.model, q1, q2, t)
+    return q1 * (1 - t) + q2 * t
 
 def distance(q1: Q, q2: Q) -> float:
     '''Return the euclidian distance between two configurations'''
@@ -78,12 +80,12 @@ def getpath(G: list[GraphNode]) -> list[Q]:
 
 # returns a collision free path from qinit to qgoal under grasping constraints
 # the path is expressed as a list of configurations
-def computepath(q_init: Q, q_goal: Q, cube_placement_q0: pin.SE3, cube_placement_qgoal: pin.SE3, k: int=1000, discretisation_steps: int=200) -> list[Q]:
+def computepath(robot, cube, q_init: Q, q_goal: Q, cube_placement_q0: pin.SE3, cube_placement_qgoal: pin.SE3, k: int=1000, discretisation_steps: int=200) -> list[Q]:
     '''Return a collision free path from qinit to qgoal under grasping constraints'''
     G = [GraphNode(None, q_init, cube_placement_q0)]
     success = False
     for i in range(k):
-        q_rand, cube_placement_qrand = rand_conf()
+        q_rand, cube_placement_qrand = rand_conf(robot, cube)
         q_near_index = nearest_vertex(G, q_rand)
         _, q_near, cube_placement_qnear = G[q_near_index]
         q_new = new_conf(q_near, q_rand, cube_placement_qnear, cube_placement_qrand, discretisation_steps)
@@ -105,7 +107,6 @@ def displaypath(robot, path, dt, viz):
 if __name__ == "__main__":
     from tools import setupwithmeshcat, collision
     from config import CUBE_PLACEMENT, CUBE_PLACEMENT_TARGET
-    from inverse_geometry import computeqgrasppose
 
     robot, cube, viz = setupwithmeshcat(url="tcp://127.0.0.1:6013")
 
@@ -116,6 +117,6 @@ if __name__ == "__main__":
     if not(successinit and successend):
         print ("error: invalid initial or end configuration")
     
-    path = computepath(q0, qe, CUBE_PLACEMENT, CUBE_PLACEMENT_TARGET)
-    displaypath(robot,path,dt=0.5,viz=viz) #you'll probably want to lower dt
+    path = computepath(robot, cube, q0, qe, CUBE_PLACEMENT, CUBE_PLACEMENT_TARGET)
+    displaypath(robot, path,dt=0.5,viz=viz) #you'll probably want to lower dt
     
