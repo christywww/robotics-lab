@@ -37,6 +37,16 @@ def get_coll_distance(robot, q: Q) -> float:
     return robot.collision_data.distanceResults[idx].min_distance
 
 
+def get_obstacle_distance(robot, q):
+    """Return the shortest distance from the robot or attached cube to the obstacle."""
+    obstacle_id = robot.collision_model.getGeometryId("obstaclebase_0")
+    pairs = [i for i, pair in enumerate(robot.collision_model.collisionPairs) if pair.first == obstacle_id or pair.second == obstacle_id]
+
+    pin.framesForwardKinematics(robot.model, robot.data, q)
+    pin.updateGeometryPlacements(robot.model, robot.data, robot.collision_model, robot.collision_data, q)
+    return min(pin.computeDistance(robot.collision_model, robot.collision_data, i).min_distance for i in pairs)
+
+
 def cost(q, robot, oMcubeL: pin.SE3, oMcubeR: pin.SE3) -> float:
     pin.framesForwardKinematics(robot.model, robot.data, q)
     oMeffL = get_oMframe_by_id(robot, LEFT_HAND)
@@ -47,7 +57,7 @@ def cost(q, robot, oMcubeL: pin.SE3, oMcubeR: pin.SE3) -> float:
     )
 
 
-def callback(q: Q, robot, cube: pin.SE3, viz=None):
+def callback(q: Q, robot, cube: pin.RobotWrapper, viz=None):
     if viz:
         from setup_meshcat import updatevisuals
 
@@ -55,7 +65,7 @@ def callback(q: Q, robot, cube: pin.SE3, viz=None):
         time.sleep(1e-1)
 
 
-def computeqgrasppose(robot, qcurrent: Q, cube: pin.SE3, cubetarget: pin.SE3, viz=None) -> tuple[Q, bool]:
+def computeqgrasppose(robot, qcurrent: Q, cube: pin.RobotWrapper, cubetarget: pin.SE3, viz=None) -> tuple[Q, bool]:
     """Return a collision free configuration grasping a cube at a specific location and a success flag"""
     setcubeplacement(robot, cube, cubetarget)
 
@@ -63,13 +73,17 @@ def computeqgrasppose(robot, qcurrent: Q, cube: pin.SE3, cubetarget: pin.SE3, vi
     oMcubeL = getcubeplacement(cube, LEFT_HOOK)  # placement of the left hand hook
     oMcubeR = getcubeplacement(cube, RIGHT_HOOK)  # placement of the right hand hook
 
+    constraints = [
+        {"type": "ineq", "fun": lambda q: get_coll_distance(robot, q) - 1e-3},
+        {"type": "ineq", "fun": lambda q: get_obstacle_distance(robot, q) - 1e-2},
+    ]
     pin.framesForwardKinematics(robot.model, robot.data, qcurrent)
     result = minimize(
         fun=partial(cost, robot=robot, oMcubeL=oMcubeL, oMcubeR=oMcubeR),
         x0=qcurrent,
         method="SLSQP",
         bounds=joint_limits,
-        constraints={"type": "ineq", "fun": lambda q: get_coll_distance(robot, q) - 1e-3},
+        constraints=constraints,
         callback=partial(callback, robot=robot, cube=cube, viz=viz),
     )
     success = result.success and result.fun <= 1e-3
