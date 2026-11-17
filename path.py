@@ -27,7 +27,7 @@ class GraphNode(NamedTuple):
 def rand_conf(robot, cube: pin.RobotWrapper) -> tuple[Q, pin.SE3]:
     success = False
     while not success:
-        cube_pos = pin.SE3(rotate("z", 0.0), np.random.uniform(low=[0.3, -0.3, 0.93], high=[0.5, 0.15, 1.2], size=3))
+        cube_pos = pin.SE3(rotate("z", 0.0), np.random.uniform(low=[0.3, -0.3, 0.93], high=[0.5, 0.15, 1.4], size=3))
         q, success = computeqgrasppose(robot, robot.q0, cube, cube_pos)
     return q, cube_pos
 
@@ -76,41 +76,56 @@ def nearest_vertex(G: list[GraphNode], q_rand: Q) -> int:
 def add_edge_and_vertex(G: list[GraphNode], parent: int, transition: list[Q], cube_placement: pin.SE3):
     G += [GraphNode(parent, q=transition[-1], cube_placement=cube_placement, transition=transition)]
 
-def getpath(G: list[GraphNode]) -> list[Q]:
+def getpath(G: list[GraphNode], idx: int = -1) -> list[Q]:
     path = []
-    node = G[-1]
+    node = G[idx]
     while node.parent is not None:
         path = node.transition + path
         node = G[node.parent]
-    path = [G[0].q] + path
-    return path
+    return [node.q] + path
+
+def extend(robot, cube, G: list[GraphNode], q_target: Q, cube_target: pin.SE3, steps: int) -> tuple[Optional[int], bool]:
+    '''Grow G from its nearest node toward the target.
+    Returns (index of new node or None, whether the target was reached).'''
+    i_near = nearest_vertex(G, q_target)
+    near = G[i_near]
+    transition, cube_last = new_conf(robot, cube, near.q, q_target, near.cube_placement, cube_target, steps)
+    if not transition:
+        return None, False
+    add_edge_and_vertex(G, i_near, transition, cube_last)
+    reached = np.linalg.norm(pin.log6(cube_last.inverse() * cube_target).vector) < 1e-3
+    return len(G) - 1, reached
 
 # returns a collision free path from qinit to qgoal under grasping constraints
 # the path is expressed as a list of configurations
-def computepath(robot, cube, q_init: Q, q_goal: Q, cube_placement_q0: pin.SE3, cube_placement_qgoal: pin.SE3, k: int=1000, discretisation_steps: int=20) -> list[Q]:
-    '''Return a collision free path from qinit to qgoal under grasping constraints.
-    Every configuration of the returned list is a grasping pose.
-    discretisation_steps = number of projected steps for an edge.'''
-    G = [GraphNode(None, q_init, cube_placement_q0, [q_init])]
-    success = False
+def computepath(robot, cube, q_init: Q, q_goal: Q, cube_placement_q0: pin.SE3, cube_placement_qgoal: pin.SE3, k: int = 1000, discretisation_steps: int = 10) -> list[Q]:
+    G_a = [GraphNode(None, q_init, cube_placement_q0, [q_init])]      # starts at the start
+    G_b = [GraphNode(None, q_goal, cube_placement_qgoal, [q_goal])]   # starts at the goal
+    a_is_start = True
+
     for i in range(k):
-        if i%10 == 0:
-            print(f"running rrt iteration {i}...")
-        q_rand, cube_placement_qrand = rand_conf(robot, cube)
-        q_near_index = nearest_vertex(G, q_rand)
-        _, q_near, cube_placement_qnear, _ = G[q_near_index]
-        transition, cube_placement_qnew = new_conf(robot, cube, q_near, q_rand, cube_placement_qnear, cube_placement_qrand, discretisation_steps)
-        if not transition:
-            continue
-        add_edge_and_vertex(G, q_near_index, transition, cube_placement_qnew)
-        q_new = transition[-1]
-        ok, transition = valid_edge(robot, cube, q_new, q_goal, cube_placement_qnew, cube_placement_qgoal, discretisation_steps)
-        if ok:
-            print(f"Path found after {i} iterations!")
-            add_edge_and_vertex(G, len(G) - 1, transition, cube_placement_qgoal)
-            success = True
-            break
-    return getpath(G) if success else []
+        if i % 10 == 0:
+            print(f"running rrt-connect iteration {i}...")
+
+        q_rand, cube_rand = rand_conf(robot, cube)
+        idx_a, _ = extend(robot, cube, G_a, q_rand, cube_rand, discretisation_steps)
+
+        if idx_a is not None:
+            na = G_a[idx_a]
+            # try to connect the other tree to the node we just added
+            idx_b, reached = extend(robot, cube, G_b, na.q, na.cube_placement, discretisation_steps)
+            if reached:
+                print(f"Path found after {i} iterations!")
+                if a_is_start:
+                    start_path, goal_path = getpath(G_a, idx_a), getpath(G_b, idx_b)
+                else:
+                    start_path, goal_path = getpath(G_b, idx_b), getpath(G_a, idx_a)
+                return start_path + goal_path[::-1]
+
+        G_a, G_b = G_b, G_a
+        a_is_start = not a_is_start
+
+    return []
 
 
 def displaypath(robot, path, dt, viz):
