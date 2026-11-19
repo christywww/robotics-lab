@@ -15,8 +15,8 @@ import pinocchio as pin
 from numpy._typing import NDArray
 from pinocchio.utils import rotate
 
-from inverse_geometry import computeqgrasppose
-from tools import collision, distanceToObstacle
+from inverse_geometry import computeqgrasppose, computeqgrasppose_ls
+from tools import collision
 
 STEP_SIZE = 0.02 # min distance for discretization step in new_conf
 Q: TypeAlias = NDArray[np.float64]
@@ -33,7 +33,7 @@ def rand_conf(robot, cube: pin.RobotWrapper) -> tuple[Q, pin.SE3]:
     success = False
     while not success:
         cube_pos = pin.SE3(rotate("z", 0.0), np.random.uniform(low=[0.3, -0.3, 0.93], high=[0.5, 0.15, 1.4], size=3))
-        q, success = computeqgrasppose(robot, robot.q0, cube, cube_pos)
+        q, success = computeqgrasppose_ls(robot, robot.q0, cube, cube_pos)
     return q, cube_pos
 
 
@@ -60,7 +60,7 @@ def new_conf(robot, cube, q_near, q_rand, cube_placement_qnear, cube_placement_q
     q_prev = q_near
     for i in range(1, n_steps + 1):
         cube_pos = lerp_se3(cube_placement_qnear, cube_placement_qrand, i / n_steps)
-        q_curr, success = computeqgrasppose(robot, q_prev, cube, cube_pos)
+        q_curr, success = computeqgrasppose_ls(robot, q_prev, cube, cube_pos)
         if success and not collision(robot, q_curr):
             transition.append(q_curr)
             placements.append(cube_pos)
@@ -78,14 +78,13 @@ def valid_edge(robot, cube, q_a: Q, q_b: Q, p_a: pin.SE3, p_b: pin.SE3, discreti
     return reached, transition, placements
 
 
-def nearest_vertex(G: list[GraphNode], q_rand: Q) -> int:
-    """returns the index of the Node of G with the configuration closest to q_rand"""
-    min_distance, min_node = float("inf"), None
-    for idx, node in enumerate(G):
-        d = distance(q_rand, node.q)
-        if d < min_distance:
-            min_distance, min_node = d, idx
-    return min_node
+def cube_distance(p1: pin.SE3, p2: pin.SE3) -> float:
+    return float(np.linalg.norm(p1.translation - p2.translation))
+
+
+def nearest_vertex(G: list[GraphNode], cube_target: pin.SE3) -> int:
+    """index of the node whose cube placement is closest to cube_target"""
+    return min(range(len(G)), key=lambda i: cube_distance(G[i].cube_placement, cube_target))
 
 
 def add_edge_and_vertex(G: list[GraphNode], parent: int, transition: list[Q], placements: list[pin.SE3]):
@@ -105,7 +104,7 @@ def getpath(G: list[GraphNode], idx: int = -1) -> tuple[list[Q], list[pin.SE3]]:
 def extend(robot, cube, G: list[GraphNode], q_target: Q, cube_target: pin.SE3, steps: int) -> tuple[Optional[int], bool]:
     '''Grow G from its nearest node toward the target.
     Returns (index of new node or None, whether the target was reached).'''
-    i_near = nearest_vertex(G, q_target)
+    i_near = nearest_vertex(G, cube_target)
     near = G[i_near]
     transition, placements = new_conf(robot, cube, near.q, q_target, near.cube_placement, cube_target, steps)
     if not transition:
@@ -115,7 +114,8 @@ def extend(robot, cube, G: list[GraphNode], q_target: Q, cube_target: pin.SE3, s
     return len(G) - 1, reached
 
 
-def shortcut(robot, cube, path: list[Q], placements: list[pin.SE3], iterations: int = 50, steps: int = 10) -> list[Q]:
+def shortcut(robot, cube, path: list[Q], placements: list[pin.SE3], iterations: int = 30, steps: int = 10) -> list[Q]:
+    print("shortcutting path...")
     path, placements = list(path), list(placements)
     for _ in range(iterations):
         if len(path) < 3:
@@ -182,4 +182,6 @@ if __name__ == "__main__":
         print("error: invalid initial or end configuration")
 
     path = computepath(robot, cube, q0, qe, CUBE_PLACEMENT, CUBE_PLACEMENT_TARGET)
+    input("done!! press enter to see path played:")
     displaypath(robot, path, dt=0.05, viz=viz)
+    print(f"path has {len(path)} points")
