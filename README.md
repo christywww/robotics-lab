@@ -21,7 +21,7 @@ A torque PID controller based on joint error plus feedforward acceleration gener
 ### Additional work.
 
 **K-d Tree**
-RRTTree.py implements the K-d Tree structure and improved nearest_vertex search for RRT, which scales better with more nodes (O(logn) on average) compared to an O(n) brute-force search.
+RRTTree.py implements the K-d Tree structure and improved nearest_vertex search for RRT, which scales better with more nodes (O(logn) on average) compared to O(n) brute-force search.
 
 
 **Force-feedback integral control**
