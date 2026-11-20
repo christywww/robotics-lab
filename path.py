@@ -7,7 +7,7 @@ Created on Thu Sep 21 11:44:32 2023
 """
 import random
 import time
-from typing import NamedTuple, Optional, TypeAlias
+from typing import Optional, TypeAlias
 import math
 
 import numpy as np
@@ -16,17 +16,11 @@ from numpy._typing import NDArray
 from pinocchio.utils import rotate
 
 from inverse_geometry import computeqgrasppose, computeqgrasppose_ls
+from RRTTree import GraphNode, RRTTree
 from tools import collision
 
 STEP_SIZE = 0.02 # min distance for discretization step in new_conf
 Q: TypeAlias = NDArray[np.float64]
-
-class GraphNode(NamedTuple):
-    parent: Optional[int]
-    q: Q
-    cube_placement: pin.SE3
-    transition: list[Q]  # grasping configurations from the parent's q (excluded) to q (included)
-    transition_placements: list[pin.SE3]  # cube placement for each q in transition
 
 
 def rand_conf(robot, cube: pin.RobotWrapper) -> tuple[Q, pin.SE3]:
@@ -78,40 +72,16 @@ def valid_edge(robot, cube, q_a: Q, q_b: Q, p_a: pin.SE3, p_b: pin.SE3, discreti
     return reached, transition, placements
 
 
-def cube_distance(p1: pin.SE3, p2: pin.SE3) -> float:
-    return float(np.linalg.norm(p1.translation - p2.translation))
-
-
-def nearest_vertex(G: list[GraphNode], cube_target: pin.SE3) -> int:
-    """index of the node whose cube placement is closest to cube_target"""
-    return min(range(len(G)), key=lambda i: cube_distance(G[i].cube_placement, cube_target))
-
-
-def add_edge_and_vertex(G: list[GraphNode], parent: int, transition: list[Q], placements: list[pin.SE3]):
-    G.append(GraphNode(parent, transition[-1], placements[-1], transition, placements))
-
-
-def getpath(G: list[GraphNode], idx: int = -1) -> tuple[list[Q], list[pin.SE3]]:
-    qs, placements = [], []
-    node = G[idx]
-    while node.parent is not None:
-        qs = node.transition + qs
-        placements = node.transition_placements + placements
-        node = G[node.parent]
-    return [node.q] + qs, [node.cube_placement] + placements
-
-
-def extend(robot, cube, G: list[GraphNode], q_target: Q, cube_target: pin.SE3, steps: int) -> tuple[Optional[int], bool]:
+def extend(robot, cube, G: RRTTree, q_target: Q, cube_target: pin.SE3, steps: int) -> tuple[Optional[GraphNode], bool]:
     '''Grow G from its nearest node toward the target.
-    Returns (index of new node or None, whether the target was reached).'''
-    i_near = nearest_vertex(G, cube_target)
-    near = G[i_near]
+    Returns (new node or None, whether the target was reached).'''
+    near = G.nearest_vertex(cube_target)
     transition, placements = new_conf(robot, cube, near.q, q_target, near.cube_placement, cube_target, steps)
     if not transition:
         return None, False
-    add_edge_and_vertex(G, i_near, transition, placements)
+    node = G.add_edge_and_vertex(near, transition, placements)
     reached = np.linalg.norm(pin.log6(placements[-1].inverse() * cube_target).vector) < 1e-3
-    return len(G) - 1, reached
+    return node, reached
 
 
 def shortcut(robot, cube, path: list[Q], placements: list[pin.SE3], iterations: int = 30, steps: int = 10) -> list[Q]:
@@ -133,8 +103,8 @@ def shortcut(robot, cube, path: list[Q], placements: list[pin.SE3], iterations: 
 # returns a collision free path from qinit to qgoal under grasping constraints
 # the path is expressed as a list of configurations
 def computepath(robot, cube, q_init: Q, q_goal: Q, cube_placement_q0: pin.SE3, cube_placement_qgoal: pin.SE3, k: int = 1000, discretisation_steps: int = 10) -> list[Q]:
-    G_a = [GraphNode(None, q_init, cube_placement_q0, [q_init], [cube_placement_q0])]  # starts at the start
-    G_b = [GraphNode(None, q_goal, cube_placement_qgoal, [q_goal], [cube_placement_qgoal])]  # starts at the goal
+    G_a = RRTTree(GraphNode(None, [q_init], [cube_placement_q0]))  # starts at the start
+    G_b = RRTTree(GraphNode(None, [q_goal], [cube_placement_qgoal]))  # starts at the goal
     a_is_start = True
 
     for i in range(k):
@@ -142,18 +112,17 @@ def computepath(robot, cube, q_init: Q, q_goal: Q, cube_placement_q0: pin.SE3, c
             print(f"running rrt-connect iteration {i}...")
 
         q_rand, cube_rand = rand_conf(robot, cube)
-        idx_a, _ = extend(robot, cube, G_a, q_rand, cube_rand, discretisation_steps)
+        node_a, _ = extend(robot, cube, G_a, q_rand, cube_rand, discretisation_steps)
 
-        if idx_a is not None:
-            na = G_a[idx_a]
+        if node_a is not None:
             # try to connect the other tree to the node we just added
-            idx_b, reached = extend(robot, cube, G_b, na.q, na.cube_placement, discretisation_steps)
+            node_b, reached = extend(robot, cube, G_b, node_a.q, node_a.cube_placement, discretisation_steps)
             if reached:
                 print(f"Path found after {i} iterations!")
                 if a_is_start:
-                    (sq, sp), (gq, gp) = getpath(G_a, idx_a), getpath(G_b, idx_b)
+                    (sq, sp), (gq, gp) = G_a.getpath(node_a), G_b.getpath(node_b)
                 else:
-                    (sq, sp), (gq, gp) = getpath(G_b, idx_b), getpath(G_a, idx_a)
+                    (sq, sp), (gq, gp) = G_b.getpath(node_b), G_a.getpath(node_a)
                 return shortcut(robot, cube, sq + gq[::-1], sp + gp[::-1], steps=discretisation_steps)
 
         G_a, G_b = G_b, G_a
