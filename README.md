@@ -1,4 +1,4 @@
-
+NOTE Pathy.py and Control.py both require you to press enter before displaying the path / running the simulation!
 
 
 Control.py
