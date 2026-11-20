@@ -33,7 +33,7 @@ Kv = 2 * np.sqrt(Kp)
 Ki = 600.
 
 # grip force feedback
-FORCE = 20        # initial squeeze command (N)
+FORCE = 100       # initial squeeze command (N)
 F_TARGET = 100.   # target contact force per hand (N)
 K_F = 20.         # force integral gain (1/s)
 grip = [FORCE]    # current squeeze command
